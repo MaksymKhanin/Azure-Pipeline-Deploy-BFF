@@ -1,0 +1,38 @@
+parameters:
+  - name: ApiBaseUrl
+    type: string
+  - name: ServiceName
+    type: string
+    values:
+      - outgoingcommand
+      - outgoingquery
+      - auth
+
+steps:
+  - bash: |
+      curlf() {
+        OUTPUT_FILE=`mktemp`
+        HTTP_CODE=$(curl --silent --output $OUTPUT_FILE --write-out "%{http_code}" "$@")
+        if [[ ${HTTP_CODE} -eq 503 ]] ; then
+          >&2 cat $OUTPUT_FILE
+          return ${HTTP_CODE}
+        elif [[ ${HTTP_CODE} -lt 200 || ${HTTP_CODE} -gt 299 ]]; then
+          echo "Unexpected status code (${HTTP_CODE})"
+          return ${HTTP_CODE}
+        fi
+        rm $OUTPUT_FILE
+      }
+
+      url="${API_BASE_URL}/health?service=${SERVICE_NAME}"
+      echo "Performing health check onto url '${url}'"
+      curlf -X GET ${url}
+
+      if [ $? -ne 0 ]; then
+        echo "Health checks FAILED ($?)"
+        exit 1
+      fi
+      echo "Health checks OK"
+    displayName: Perform health check
+    env:
+      API_BASE_URL: ${{ parameters.ApiBaseUrl }}
+      SERVICE_NAME: ${{ parameters.ServiceName }}

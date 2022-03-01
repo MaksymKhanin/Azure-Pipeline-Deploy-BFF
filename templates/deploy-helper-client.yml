@@ -1,0 +1,36 @@
+parameters:
+  - name: EnvironmentName
+    type: string
+  - name: StorageAccountName
+    type: string
+  - name: AzureConnection
+    type: string
+
+steps:
+  - task: DownloadBuildArtifacts@1
+    displayName: 'Download Build Artifacts'
+    inputs:
+      artifactName: drop
+      
+  - task: ExtractFiles@1
+    displayName: 'Extract files '
+    inputs:
+      archiveFilePatterns: '$(Build.ArtifactStagingDirectory)/drop/$(Build.BuildId).zip'
+      destinationFolder: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId)'
+      
+  - task: AzureCLI@2
+    displayName: Deploy_${{ parameters.EnvironmentName }}
+    name: deploy
+    env:
+      EFACTURE_HELPER_STORAGEACCOUNTNAME: ${{ parameters.StorageAccountName }}
+    inputs:
+      azureSubscription: ${{ parameters.AzureConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      workingDirectory: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId)'
+      inlineScript: |
+
+        echo 'Start Deploying on environment ${{ parameters.EnvironmentName }}'
+        
+        az storage blob upload-batch --auth-mode login --account-name ${EFACTURE_HELPER_STORAGEACCOUNTNAME} -d '$web' -s ./
+      

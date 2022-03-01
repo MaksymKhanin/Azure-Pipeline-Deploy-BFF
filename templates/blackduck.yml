@@ -1,0 +1,49 @@
+parameters:
+  - name: BlackDuckProject
+    type: string
+  - name: BlackDuckConnectionName
+    type: string
+  - name: BlackDuckSourceFolder
+    type: string
+  - name: IsPullRequest
+    type: boolean
+    default: true
+
+steps:
+  - bash: |
+      curl -X POST "https://blackduck-scriptpython.azurewebsites.net/api/BlackDuck-CleanVersion?projectname=${PROJECT}&nbversiontokeep=5&code=hyzHYUpD6zGsXNTUXV2B6OWYPvIdu8rm/rcQlzqYoQxiHvXwQBb6rg==" -H "Content-Type: application/json" -d "null" --globoff
+    displayName: Clean BlackDuck versions
+    continueOnError: true
+    env:
+      PROJECT: ${{ parameters.BlackDuckProject }}
+
+  - ${{ if eq(parameters.IsPullRequest, false) }}:
+    - task: SynopsysDetectTask@7
+      displayName: BlackDuck Analysis
+      continueOnError: true
+      inputs:
+        Products: BD
+        BlackDuckService: ${{ parameters.BlackDuckConnectionName }}
+        AddTaskSummary: true
+        DetectArguments: |
+          --detect.project.name="${{ parameters.BlackDuckProject }}"
+          --detect.project.user.groups="[Stream]_admin"
+          --detect.project.version.name="$(Build.SourceBranchName)"
+          --detect.source.path="${{ parameters.BlackDuckSourceFolder }}"
+          --detect.policy.check.fail.on.severities="CRITICAL, MAJOR, MINOR"
+
+  - ${{ if eq(parameters.IsPullRequest, true) }}:
+    - task: SynopsysDetectTask@7
+      displayName: BlackDuck Analysis
+      continueOnError: true
+      inputs:
+        Products: BD
+        BlackDuckService: ${{ parameters.BlackDuckConnectionName }}
+        AddTaskSummary: true
+        DetectArguments: |
+          --detect.project.name="${{ parameters.BlackDuckProject }}"
+          --detect.project.user.groups="[Stream]_admin"
+          --detect.project.version.name="PullRequest_$(System.PullRequest.PullRequestId)"
+          --detect.project.version.phase=PLANNING
+          --detect.source.path="${{ parameters.BlackDuckSourceFolder }}"
+          --detect.policy.check.fail.on.severities="CRITICAL, MAJOR, MINOR"

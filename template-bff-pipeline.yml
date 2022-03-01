@@ -1,0 +1,295 @@
+name: templateBFF-pipeline-$(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - Services/Client/*
+
+variables:
+  - template: vars/vars-global.yml
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+  - stage: build
+    displayName: Build
+    jobs:
+      - job: build
+        displayName: Build and Test
+        steps:
+          - task: UseDotNet@2
+            displayName: "Use .NET Core sdk"
+            inputs:
+              packageType: "sdk"
+              version: "6.0.x"
+
+          - task: ArtifactoryDotnetCore@1
+            displayName: Artifactory - Restore
+            inputs:
+              command: restore
+              arguments: /p:Configuration="Release"
+              artifactoryService: ArtifactoryCloud
+              targetResolveRepo: $(NugetFeed)
+              rootPath: $(ToolsRoot)/Bff.sln
+
+          - task: DotNetCoreCLI@2
+            displayName: Build
+            inputs:
+              command: build
+              projects: $(ToolsRoot)/**/*.sln
+              arguments: --configuration "Release" --no-restore
+
+          - task: DotNetCoreCLI@2
+            displayName: Publish bffTemplate
+            inputs:
+              command: publish
+              projects: $(ToolsRoot)/**/*.sln
+              publishWebProjects: false
+              arguments: --configuration Release --output $(Build.ArtifactStagingDirectory)/bffTemplate --no-build --no-restore
+              zipAfterPublish: true
+
+          - task: PublishBuildArtifacts@1
+            displayName: Emit bffTemplate artifact
+            inputs:
+              ArtifactName: bffTemplate
+              PathtoPublish: $(Build.ArtifactStagingDirectory)/bffTemplate
+
+  - ${{ if eq(variables.IsPR, true) }}:
+      - stage: plan_dev
+        displayName: Plan Dev
+        dependsOn: []
+        variables:
+          - template: vars/vars-dev.yml
+        jobs:
+          - job: tf_plan
+            displayName: Terraform plan
+            pool:
+              vmImage: ubuntu-latest
+            steps:
+              - template: /pipelines/terraform-plan.yml
+                parameters:
+                  EnvironmentName: ${{ variables.Environment }}
+                  ComponentName: BFF Template
+                  AzureConnectionName: ${{ variables.AzureConnection }}
+                  TerraformVersion: ${{ variables.TerraformVersion }}
+                  TerraformRoot: ${{ variables.TerraformRoot }}
+
+              - task: CopyFiles@1
+                displayName: Copy Files to publish
+                inputs:
+                  TargetFolder: $(build.artifactstagingdirectory)
+                  SourceFolder: ${{ variables.TerraformRoot }}
+                  Contents: |
+                    **/*.tf
+                    **/*.tpl
+                    environments/${{ variables.Environment }}/**/*
+                    tfplan
+
+              - task: PublishPipelineArtifact@1
+                displayName: Publish pipeline artifact
+                inputs:
+                  targetPath: $(build.artifactstagingdirectory)
+                  artifact: apply_actifact_${{ variables.Environment }}_attempt_$(System.StageAttempt)
+
+              - bash: |
+                  echo "##vso[task.setvariable variable=ArtifactIndex;isOutput=true;]$(System.StageAttempt)"
+                name: ArtifactMemento
+
+      - stage: deploy_dev
+        displayName: Deploy Dev
+        dependsOn: [build, plan_dev]
+        variables:
+          - template: /vars/vars-dev.yml
+          - name: ArtifactIndex
+            value: $[ stageDependencies.plan_dev.tf_plan.outputs['ArtifactMemento.ArtifactIndex'] ]
+        jobs:
+          - job: before_deploy_${{ variables.Environment }}
+            displayName: Approve before Apply
+            pool: server
+            steps:
+              - task: ManualValidation@0
+                timeoutInMinutes: 4320 # 3 days
+                inputs:
+                  notifyUsers: ""
+                  instructions: "Do you really want to deploy on the ${{ variables.Environment }} environment ?"
+                  onTimeout: reject
+
+          - job: tf_apply
+            displayName: Terraform apply
+            dependsOn:
+              - before_deploy_${{ variables.Environment }}
+            condition: eq(dependencies.before_deploy_${{ variables.Environment }}.result, 'Succeeded')
+            steps:
+              - checkout: none
+
+              - download: current
+                displayName: Download terraform artifact
+                artifact: apply_actifact_${{ variables.Environment }}_attempt_$(ArtifactIndex)
+
+              - template: /templates/terraform-apply.yml
+                parameters:
+                  EnvironmentName: ${{ variables.Environment }}
+                  AzureConnectionName: ${{ variables.AzureConnection }}
+                  TerraformRoot: $(Pipeline.Workspace)/apply_actifact_${{ variables.Environment }}_attempt_$(ArtifactIndex)
+                  TerraformVersion: ${{ variables.TerraformVersion }}
+                  PlanFilename: tfplan
+
+          - job: get_tf_outputs
+            displayName: Get terraform outputs
+            dependsOn: tf_apply
+            steps:
+              - checkout: none
+
+              - download: current
+                displayName: Download terraform artifact
+                artifact: apply_actifact_${{ variables.Environment }}_attempt_$(ArtifactIndex)
+
+              - template: /templates/terraform-output.yml
+                parameters:
+                  EnvironmentName: ${{ variables.Environment }}
+                  AzureConnectionName: ${{ variables.AzureConnection }}
+                  TerraformRoot: $(Pipeline.Workspace)/apply_actifact_${{ variables.Environment }}_attempt_$(ArtifactIndex)
+                  TerraformVersion: ${{ variables.TerraformVersion }}
+
+          - job: deploy
+            displayName: Deploy Template BFF
+            dependsOn: get_tf_outputs
+            condition: eq(dependencies.get_tf_outputs.result, 'Succeeded')
+            variables:
+              appServiceAppName: $[ dependencies.get_tf_outputs.outputs['tf_output.app_1_name'] ]
+            steps:
+              - checkout: none
+
+              - download: current
+                displayName: Download Template BFF artifact
+                artifact: helperClient
+
+              - task: AzureWebApp@1
+                displayName: Deploy Template BFF
+                inputs:
+                  azureSubscription: ${{ variables.AzureConnection }}
+                  appType: webApp
+                  appName: $(appServiceAppName)
+                  package: $(Pipeline.Workspace)/bffTemplate/*.zip
+
+  - ${{ if eq(variables.IsPR, false) }}:
+      - stage: plan_inte
+        displayName: Plan Inte
+        dependsOn: []
+        variables:
+          - template: vars/vars-inte.yml
+        jobs:
+          - job: tf_plan
+            displayName: Terraform plan
+            pool:
+              vmImage: ubuntu-latest
+            steps:
+              - template: /templates/terraform-plan.yml
+                parameters:
+                  EnvironmentName: ${{ variables.Environment }}
+                  ComponentName: Template BFF
+                  AzureConnectionName: ${{ variables.AzureConnection }}
+                  TerraformVersion: ${{ variables.TerraformVersion }}
+                  TerraformRoot: ${{ variables.TerraformRoot }}
+
+              - task: CopyFiles@1
+                displayName: Copy Files to publish
+                inputs:
+                  TargetFolder: $(build.artifactstagingdirectory)
+                  SourceFolder: ${{ variables.TerraformRoot }}
+                  Contents: |
+                    **/*.tf
+                    **/*.tpl
+                    environments/${{ variables.Environment }}/**/*
+                    tfplan
+
+              - task: PublishPipelineArtifact@1
+                displayName: Publish pipeline artifact
+                inputs:
+                  targetPath: $(build.artifactstagingdirectory)
+                  artifact: apply_actifact_${{ variables.Environment }}_attempt_$(System.StageAttempt)
+
+              - bash: |
+                  echo "##vso[task.setvariable variable=ArtifactIndex;isOutput=true;]$(System.StageAttempt)"
+                name: ArtifactMemento
+
+      - stage: deploy_inte
+        displayName: Deploy Inte
+        dependsOn: [build, plan_inte]
+        variables:
+          - template: /pipelines/vars/vars-inte.yml
+          - name: ArtifactIndex
+            value: $[ stageDependencies.plan_inte.tf_plan.outputs['ArtifactMemento.ArtifactIndex'] ]
+        jobs:
+          - job: before_deploy_${{ variables.Environment }}
+            displayName: Approve before Apply
+            pool: server
+            steps:
+              - task: ManualValidation@0
+                timeoutInMinutes: 4320 # 3 days
+                inputs:
+                  notifyUsers: ""
+                  instructions: "Do you really want to deploy on the ${{ variables.Environment }} environment ?"
+                  onTimeout: reject
+
+          - job: tf_apply
+            displayName: Terraform apply
+            dependsOn:
+              - before_deploy_${{ variables.Environment }}
+            condition: eq(dependencies.before_deploy_${{ variables.Environment }}.result, 'Succeeded')
+            steps:
+              - checkout: none
+
+              - download: current
+                displayName: Download terraform artifact
+                artifact: apply_actifact_${{ variables.Environment }}_attempt_$(ArtifactIndex)
+
+              - template: /templates/terraform-apply.yml
+                parameters:
+                  EnvironmentName: ${{ variables.Environment }}
+                  AzureConnectionName: ${{ variables.AzureConnection }}
+                  TerraformRoot: $(Pipeline.Workspace)/apply_actifact_${{ variables.Environment }}_attempt_$(ArtifactIndex)
+                  TerraformVersion: ${{ variables.TerraformVersion }}
+                  PlanFilename: tfplan
+
+          - job: get_tf_outputs
+            displayName: Get terraform outputs
+            dependsOn: tf_apply
+            steps:
+              - checkout: none
+
+              - download: current
+                displayName: Download terraform artifact
+                artifact: apply_actifact_${{ variables.Environment }}_attempt_$(ArtifactIndex)
+
+              - template: /templates/terraform-output.yml
+                parameters:
+                  EnvironmentName: ${{ variables.Environment }}
+                  AzureConnectionName: ${{ variables.AzureConnection }}
+                  TerraformRoot: $(Pipeline.Workspace)/apply_actifact_${{ variables.Environment }}_attempt_$(ArtifactIndex)
+                  TerraformVersion: ${{ variables.TerraformVersion }}
+
+          - job: deploy
+            displayName: Deploy Template BFF
+            dependsOn: get_tf_outputs
+            condition: eq(dependencies.get_tf_outputs.result, 'Succeeded')
+            variables:
+              appServiceAppName: $[ dependencies.get_tf_outputs.outputs['tf_output.app_1_name'] ]
+            steps:
+              - checkout: none
+
+              - download: current
+                displayName: Download Template BFF artifact
+                artifact: templateBFF
+
+              - task: AzureWebApp@1
+                displayName: Deploy Template BFF
+                inputs:
+                  azureSubscription: ${{ variables.AzureConnection }}
+                  appType: webApp
+                  appName: $(appServiceAppName)
+                  package: $(Pipeline.Workspace)/templateBFF/*.zip

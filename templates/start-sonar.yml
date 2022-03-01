@@ -1,0 +1,17 @@
+parameters:
+  SonarProjectKey: ""
+  SonarProjectName: ""
+
+steps:
+  - task: SonarCloudPrepare@1
+    displayName: Prepare Sonar analysis for .NET
+    inputs:
+      SonarCloud: MaksymKhanin.Project.Status
+      organization: MaksymKhanin
+      projectKey: ${{ parameters.SonarProjectKey }}
+      projectName: ${{ parameters.SonarProjectName }}
+      extraProperties: |
+        sonar.exclusions=**/obj/**,**/*.dll,**/*.csv,**/*.json,**/Tests/**
+        sonar.cs.vstest.reportsPaths=$(Agent.TempDirectory)/*.trx
+        sonar.coverageReportPaths=$(Agent.TempDirectory)/mergedcoveragereport/SonarQube.xml
+        sonar.coverage.exclusions=**/Tests/**/*,**/Fakes/**,**/Services/Common/**

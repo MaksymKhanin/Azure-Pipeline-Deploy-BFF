@@ -1,0 +1,21 @@
+variables:
+  - name: ToolsRoot
+    value:
+  - name: TerraformRoot
+    value: Services/*/Client/provisioning/terraform
+  - name: TerraformVersion
+    value: 1.1.0
+  - name: NugetFeed
+    value: NugetFeedName
+  - name: IsPR
+    value: ${{ eq(variables['Build.Reason'], 'PullRequest') }}
+  - name: Environment
+    ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
+      value: dev
+    ${{ if ne(variables['Build.Reason'], 'PullRequest') }}:
+      value: inte
+  - name: AzureConnection
+    ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
+      value: Build
+    ${{ if ne(variables['Build.Reason'], 'PullRequest') }}:
+      value: INTE

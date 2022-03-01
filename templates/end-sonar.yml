@@ -1,0 +1,8 @@
+steps:
+  - task: SonarCloudAnalyze@1
+    displayName: Run Code Analysis
+    continueOnError: false
+    
+  - task: SonarCloudPublish@1
+    displayName: Publish Quality Gate Result
+    continueOnError: false

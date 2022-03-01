@@ -1,0 +1,53 @@
+parameters:
+  - name: EnvironmentName
+    type: string
+  - name: AzureConnectionName
+    type: string
+  - name: TerraformVersion
+    type: string
+  - name: TerraformRoot
+    type: string
+  - name: TerraformVariables
+    type: object
+    default: []
+  - name: PlanFilename
+    type: string
+    default: ""
+
+steps:
+  - task: TerraformInstaller@0
+    displayName: Install terraform
+    inputs:
+      terraformVersion: ${{ parameters.TerraformVersion }}
+
+  - task: AzureCLI@2
+    displayName: Terraform apply
+    env:
+      ENVIRONMENT_NAME: ${{ parameters.EnvironmentName }}
+      ${{ each item in parameters.TerraformVariables }}:
+        ${{ format('TF_VAR_{0}', item.name) }}: ${{ item.value }}
+    inputs:
+      azureSubscription: ${{ parameters.AzureConnectionName }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      addSpnToEnvironment: true
+      workingDirectory: ${{ parameters.TerraformRoot }}
+      failOnStandardError: true
+      inlineScript: |
+        set -e
+        echo "Setting Azure environment variables"
+        export ARM_CLIENT_ID=${servicePrincipalId}
+        export ARM_CLIENT_SECRET=${servicePrincipalKey}
+        export ARM_SUBSCRIPTION_ID=$(az account show --query 'id' --output tsv)
+        export ARM_TENANT_ID=${tenantId}
+
+        echo "Run terraform init on environment ${ENVIRONMENT_NAME}"
+        terraform init -reconfigure -upgrade -backend-config=environments/${ENVIRONMENT_NAME}/backend.config
+
+        echo "Run terraform apply..."
+        if [ -z "${{ parameters.PlanFilename }}" ]
+        then
+          terraform apply -var-file=environments/${ENVIRONMENT_NAME}/variables.tfvars -input=false -auto-approve
+        else
+          terraform apply -input=false -auto-approve ${{ parameters.PlanFilename }}
+        fi

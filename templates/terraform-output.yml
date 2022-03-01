@@ -1,0 +1,43 @@
+parameters:
+  - name: EnvironmentName
+    type: string
+  - name: AzureConnectionName
+    type: string
+  - name: TerraformVersion
+    type: string
+  - name: TerraformRoot
+    type: string
+
+steps:
+  - task: TerraformInstaller@0
+    displayName: Install terraform
+    inputs:
+      terraformVersion: ${{ parameters.TerraformVersion }}
+
+  - task: AzureCLI@2
+    displayName: Fetch terraform outputs
+    name: tf_output
+    env:
+      ENVIRONMENT_NAME: ${{ parameters.EnvironmentName }}
+    inputs:
+      azureSubscription: ${{ parameters.AzureConnectionName }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      addSpnToEnvironment: true
+      workingDirectory: ${{ parameters.TerraformRoot }}
+      failOnStandardError: true
+      inlineScript: |
+        set -e
+        echo "Setting Azure environment variables"
+        export ARM_CLIENT_ID=${servicePrincipalId}
+        export ARM_CLIENT_SECRET=${servicePrincipalKey}
+        export ARM_SUBSCRIPTION_ID=$(az account show --query 'id' --output tsv)
+        export ARM_TENANT_ID=${tenantId}
+
+        echo "Run terraform init on environment ${ENVIRONMENT_NAME}"
+        terraform init -reconfigure -upgrade -backend-config=environments/${ENVIRONMENT_NAME}/backend.config
+
+        echo "Getting terraform outputs..."
+        OUTPUTS=$(terraform output -json)
+        outputs=$(echo $OUTPUTS | jq -r 'to_entries | map("##vso[task.setvariable variable=\(.key);isOutput=true;]\(.value.value)") | .[]')
+        ( IFS=$'\n'; echo "${outputs[*]}" )
